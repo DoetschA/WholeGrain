@@ -1,0 +1,163 @@
+---
+title: "mouse whole grain study - sequence data processing (FASTQ to ASVs)"
+output: html_notebook
+---
+
+# Project desciption
+(see mouseWholeGrain.phyloseq.Rmd)
+
+# Processing of the microbiome data with DADA2 
+
+## Initialisation
+Loading required packages & settings
+
+```{r}
+library(dada2)
+library(DECIPHER)
+library(phangorn)
+library(ggplot2)
+
+#library(phyloseq)
+       # required for plotting
+#library(vegan)         # for several statistics, including adonis (permanova)
+#library(RColorBrewer)  # custom color scales
+#library(pairwiseAdonis)
+#library(lme4)          # linear mixed models
+```
+
+# import MiSeq data
+
+Create list of filenames
+```{r}
+WG_filetable <- read.table("./WG.files")
+WGf_names <- as.character(WG_filetable[,2])
+WGr_names <- as.character(WG_filetable[,3])
+WG_id <- as.character(WG_filetable[,1])
+```
+
+Inspect quality profiles 
+```{r}
+ii <- sample(length(WG_id), 3)
+print(plotQualityProfile(WGf_names[ii]) + ggtitle("Fwd"))
+print(plotQualityProfile(WGr_names[ii]) + ggtitle("Rev"))
+```
+
+
+# filter and trim sequences
+Quality looks good, so we go for trimming at 240/160 bp
+Left trimming ist not necessary because with this  protocol the 16S primer was sequenced as well and removed prior to processing. Thus, trimming has already been done for 5' ends
+```{r}
+WGf_filt <- paste0(WG_id, "_F_filt.fastq.gz")
+WGr_filt <- paste0(WG_id, "_R_filt.fastq.gz")
+names(WGf_filt) <- WG_id
+names(WGr_filt) <- WG_id
+
+filtout <- filterAndTrim(WGf_names, WGf_filt, WGr_names, WGr_filt, truncLen = c(240,160), maxN = 0, maxEE = c(2,2), rm.phix = T, compress = T, multithread = T)
+saveRDS(filtout,"filtout.rds")
+head(filtout)
+```
+Filtering went well and removed only few sequences due to the high overall quality.
+
+# Prepare dereplicated objects for further processing
+```{r}
+WGf_derep <- derepFastq(WGf_filt)
+WGr_derep <- derepFastq(WGr_filt)
+```
+
+# Build error models
+Error models learn from a subset of samples, before they are applied to the whole dataset
+```{r}
+k = 40 # number of samples used for learning
+ii <- sample(length(WG_id), k)
+
+WGf_learn <- dada(WGf_derep[ii], err = NULL, selfConsist = T, multithread = T)
+WGr_learn <- dada(WGr_derep[ii], err = NULL, selfConsist = T, multithread = T)
+WGf_err <- WGf_learn[[1]]$err_out
+WGr_err <- WGr_learn[[1]]$err_out
+
+plotErrors(WGf_learn, nominalQ = T)
+plotErrors(WGr_learn, nominalQ = T)
+
+save.image()
+```
+
+# Sample inference (Pseudo-Pooling)
+
+```{r}
+WGf_dada_pseudo <- dada(WGf_derep, err = WGf_err, pool = "pseudo", multithread = T)
+WGr_dada_pseudo <- dada(WGr_derep, err = WGr_err, pool = "pseudo", multithread = T)
+WGmerged_pseudo <- mergePairs(WGf_dada_pseudo, WGf_derep, WGr_dada_pseudo, WGr_derep)
+
+WG_seqtab <- makeSequenceTable(WGmerged_pseudo)
+table(nchar(getSequences(WG_seqtab)))
+
+save.image()
+```
+
+# Remove chimeras
+```{r}
+WG_nochim <- removeBimeraDenovo(WG_seqtab, method = "consensus", multithread=T, verbose = T)
+dim(WG_nochim)
+table(nchar(getSequences(WG_seqtab)))
+
+#chimeras per sample
+chimtab <- data.frame(merged = rowSums(WG_seqtab), nochim = rowSums(WG_nochim), chimratio = 1-rowSums(WG_nochim)/rowSums(WG_seqtab))
+table(nchar(getSequences(WG_nochim)))
+```
+
+# cleanup
+Deleting the large derep objects that are not used any further
+```{r}
+rm(WGf_derep)
+rm(WGr_derep)
+rm(WGf_dada_pseudo)
+rm(WGr_dada_pseudo)
+save.image()
+```
+
+
+# Assign taxonomy
+Using Silva v138, but Species assignment is not yet available
+```{r}
+WG_tax <- assignTaxonomy(WG_nochim, refFasta = "/data/db/SILVA/dada2/silva_nr_v138_train_set.fa.gz", multithread = T)
+#WG_tax <- addSpecies(WG_tax, "/data/db/SILVA/dada2/silva_species_assignment_v132.fa.gz")
+colnames(WG_tax) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus") #, "Species")
+taxa.print <- WG_tax
+rownames(taxa.print) <- NULL
+head(taxa.print)
+save.image()
+```
+
+# how many singletons?
+There are more than 30000 sequences, how many of those are very rare and could be filtered?
+```{r}
+singletons <- colSums(WG_nochim>0)==1
+paste("Filtering ", sum(singletons), " (of ", dim(WG_nochim)[2], ") sequences that were present only once in all samples.", sep = "")
+WG_nochim_nosingleton <- WG_nochim[,!singletons]
+```
+
+
+## Phylogenetic tree
+Currently only for the no-singleton matrix, since the algorithm cannot easily handle >30000 sequences
+```{r}
+WG_dna_filtered <- DNAStringSet(getSequences(WG_nochim_nosingleton))
+names(WG_dna_filtered) <- sprintf("ASV%04d",1:length(WG_dna_filtered))
+alignment_WG <- AlignSeqs(WG_dna_filtered, anchor=NA, processors = NULL)
+phang.align <- phyDat(as(alignment_WG, "matrix"), type = "DNA")
+dm <- dist.ml(phang.align)
+treeNJ <- NJ(dm)
+fit = pml(treeNJ, data=phang.align)
+
+fitGTR_WG <- update(fit, k=4, inv=.2)
+fitGTR_WG <- optim.pml(fitGTR_WG, model = "GTR", optInv = T, optGamma = T, rearrangement = "stochastic", control = pml.control(trace = 0))
+```
+
+# cleanup
+Deleting the large objects that are not used any further
+```{r}
+rm(WGf_learn)
+rm(WGr_learn)
+rm(WGmerged_pseudo)
+rm(dm)
+save.image()
+```
