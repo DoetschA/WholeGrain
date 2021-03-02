@@ -16,13 +16,6 @@ library(dada2)
 library(DECIPHER)
 library(phangorn)
 library(ggplot2)
-
-#library(phyloseq)
-       # required for plotting
-#library(vegan)         # for several statistics, including adonis (permanova)
-#library(RColorBrewer)  # custom color scales
-#library(pairwiseAdonis)
-#library(lme4)          # linear mixed models
 ```
 
 # import MiSeq data
