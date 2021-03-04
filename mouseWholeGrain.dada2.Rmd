@@ -113,8 +113,8 @@ save.image()
 Using Silva v138, but Species assignment is not yet available
 ```{r}
 WG_tax <- assignTaxonomy(WG_nochim, refFasta = "/data/db/SILVA/dada2/silva_nr_v138_train_set.fa.gz", multithread = T)
-#WG_tax <- addSpecies(WG_tax, "/data/db/SILVA/dada2/silva_species_assignment_v132.fa.gz")
-colnames(WG_tax) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus") #, "Species")
+WG_tax <- addSpecies(WG_tax, "/data/db/SILVA/dada2/silva_species_assignment_v138.fa.gz")
+colnames(WG_tax) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
 taxa.print <- WG_tax
 rownames(taxa.print) <- NULL
 head(taxa.print)
